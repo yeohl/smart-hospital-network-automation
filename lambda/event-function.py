@@ -5,8 +5,9 @@ logger.setLevel(logging.INFO)
 
 ec2          = boto3.client("ec2")
 ssm          = boto3.client("ssm")
-lambda_client = boto3.client("lambda")   
+lambda_client = boto3.client("lambda")   # Slack 전송용
 
+# ────────── RDS 연결 ────────── #
 RDS_HOST = "mysql-multi-db.cxq0qomeyx1k.us-east-1.rds.amazonaws.com"
 RDS_USER = "admin"
 RDS_PASSWORD = "zaqxsw11!"
@@ -18,6 +19,7 @@ def get_db_conn():
         database=RDS_DB, autocommit=True, connect_timeout=5
     )
 
+# ────────── 매핑 테이블 ────────── #
 ROUTE_TABLES = {
     "i-0b63747b3d1f52972": {"ward": "A", "route_table_id": "rtb-0d0465e7f748974dd", "cidr": "10.0.10.0/23"},
     "i-0fd919c3aa8dea3e9": {"ward": "A", "route_table_id": "rtb-0d0465e7f748974dd", "cidr": "10.0.10.0/23"},
@@ -30,6 +32,7 @@ WARD_GATEWAYS = {"A": "10.0.10.1", "B": "10.0.20.1", "C": "10.0.30.1"}
 WARD_SG      = {"A": "sg-01c5f25b8bf5a0883", "B": "sg-086f0317e74950315", "C": "sg-0b63679cde4d92c80"}
 DEFAULT_SG   = "sg-01c5f25b8bf5a0883"
 
+# ────────── DB 헬퍼 ────────── #
 def update_status(ward, instance_id, status):
     try:
         with get_db_conn() as conn, conn.cursor() as c:
@@ -59,7 +62,7 @@ def record_history(fault_ward, from_inst, to_ward, to_id,
     except Exception as e:
         logger.error(f"[DB] history insert 실패: {e}")
 
-
+# ────────── 장애 로그 복사 함수 ────────── #
 def record_fault_log_from_history():
     try:
         with get_db_conn() as conn, conn.cursor() as c:
@@ -90,7 +93,7 @@ def record_fault_log_from_history():
     except Exception as e:
         logger.error(f"[DB] 장애 로그 기록 실패: {e}")
 
-
+# ────────── 보조 헬퍼 ────────── #
 def wait_instance_ready(iid, timeout=420, poll=10):
     elapsed = 0
     while elapsed < timeout:
@@ -119,23 +122,20 @@ def extract_instance_id_from_alarm(name):
         "WARD-C_i-c2_HealthCheck": "i-056a592094da69fe6",
     }.get(name)
 
-
+# ────────── Lambda 핸들러 ────────── #
 def lambda_handler(event, _):
     logger.info("=== EVENT ===\n" + json.dumps(event))
     instance_id, trig = None, None
 
-    # SNS (CloudWatch Alarm)
     if event.get("Records") and event["Records"][0]["EventSource"] == "aws:sns":
         alarm = json.loads(event["Records"][0]["Sns"]["Message"])
         instance_id = extract_instance_id_from_alarm(alarm.get("AlarmName"))
         trig = "cloudwatch"
 
-    # CloudTrail StopInstances
     elif event.get("source") == "aws.ec2" and event["detail"].get("eventName") == "StopInstances":
         instance_id = event["detail"]["requestParameters"]["instancesSet"]["items"][0]["instanceId"]
         trig = "cloudtrail"
 
-    # CloudWatch ENI Detach/Delete
     elif event.get("source") == "aws.ec2" and event["detail"].get("eventName") in ("DetachNetworkInterface", "DeleteNetworkInterface"):
         instance_id = event["detail"]["requestParameters"].get("instanceId")
         trig = "cloudwatch"
@@ -145,17 +145,15 @@ def lambda_handler(event, _):
 
     return _process(instance_id, trig)
 
-
+# ────────── 복구 로직 ────────── #
 def _process(instance_id, trig):
     cfg  = ROUTE_TABLES[instance_id]
     ward = cfg["ward"]
 
-    
     instance_desc = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"][0]["Instances"][0]
     old_eni_id = instance_desc["NetworkInterfaces"][0]["NetworkInterfaceId"]
     subnet     = instance_desc["SubnetId"]
 
-   
     if trig == "cloudtrail":
         update_status(ward, instance_id, "stopping")
         record_history(ward, instance_id, ward, instance_id, cfg["route_table_id"], cfg["cidr"],
@@ -169,19 +167,17 @@ def _process(instance_id, trig):
         ec2.start_instances(InstanceIds=[instance_id])
         update_status(ward, instance_id, "starting")
 
-    else:  # cloudwatch
+    else:
         update_status(ward, instance_id, "network-fault")
         record_history(ward, old_eni_id, ward, instance_id, cfg["route_table_id"], cfg["cidr"],
                        status="NETWORK_RECOVERY", msg="ENI 장애 감지", trig="cloudwatch")
 
-    
     eni_id = ec2.create_network_interface(
         SubnetId=subnet,
         Groups=[WARD_SG.get(ward, DEFAULT_SG)],
         Description="Auto-recovery ENI"
     )["NetworkInterface"]["NetworkInterfaceId"]
 
-  
     for _ in range(30):
         state = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"][0]["Instances"][0]["State"]["Name"]
         if state in ("stopped", "running"):
@@ -193,37 +189,20 @@ def _process(instance_id, trig):
 
     ec2.attach_network_interface(NetworkInterfaceId=eni_id, InstanceId=instance_id, DeviceIndex=1)
 
-    
     record_history(ward, old_eni_id, ward, eni_id,
                    cfg["route_table_id"], cfg["cidr"],
                    status="ENI_CREATED", msg="Failover ENI 생성 및 부착", trig=trig)
 
-    
-    try:
-        ec2.replace_route(RouteTableId=cfg["route_table_id"],
-                          DestinationCidrBlock=cfg["cidr"],
-                          NetworkInterfaceId=eni_id)
-    except ec2.exceptions.ClientError:
-        ec2.create_route(RouteTableId=cfg["route_table_id"],
-                         DestinationCidrBlock=cfg["cidr"],
-                         NetworkInterfaceId=eni_id)
-
-    
-    lambda_client.invoke(
-        FunctionName="Slack-SNS",
-        InvocationType="Event",
-        Payload=json.dumps({
-            "type": "ROUTE_RECOVERY",
-            "ward": ward,
-            "instance_id": instance_id,
-            "eni_id": eni_id,
-            "status": "SUCCESS",
-            "triggered_by": trig
-        }).encode()
-    )
-
-   
     if wait_instance_ready(instance_id):
+        try:
+            ec2.replace_route(RouteTableId=cfg["route_table_id"],
+                              DestinationCidrBlock=cfg["cidr"],
+                              NetworkInterfaceId=eni_id)
+        except ec2.exceptions.ClientError:
+            ec2.create_route(RouteTableId=cfg["route_table_id"],
+                             DestinationCidrBlock=cfg["cidr"],
+                             NetworkInterfaceId=eni_id)
+
         ssm.send_command(
             InstanceIds=[instance_id],
             DocumentName="AWS-RunShellScript",
@@ -239,11 +218,24 @@ def _process(instance_id, trig):
         update_status(ward, instance_id, "running")
         record_history(ward, eni_id, ward, instance_id,
                        cfg["route_table_id"], cfg["cidr"],
-                       status="SUCCESS", msg="SSM 네트워크 재설정 완료", trig=trig)
+                       status="SUCCESS", msg="라우팅 전환 및 SSM 네트워크 재설정 완료", trig=trig)
     else:
         update_status(ward, instance_id, "init-timeout")
         record_history(ward, eni_id, ward, instance_id,
                        cfg["route_table_id"], cfg["cidr"],
-                       status="FAILURE", msg="SSM timeout", trig=trig)
+                       status="FAILURE", msg="EC2 or SSM timeout", trig=trig)
+
+    lambda_client.invoke(
+        FunctionName="Slack-SNS",
+        InvocationType="Event",
+        Payload=json.dumps({
+            "type": "ROUTE_RECOVERY",
+            "ward": ward,
+            "instance_id": instance_id,
+            "eni_id": eni_id,
+            "status": "SUCCESS",
+            "triggered_by": trig
+        }).encode()
+    )
 
     return {"statusCode": 200, "body": f"{instance_id} recovery done"}
