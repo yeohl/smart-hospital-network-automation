@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>🧑‍⚕️ 스마트 병원 고도화 대시보드</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        body { 
+            font-family: 'Inter', 'Noto Sans KR', sans-serif; 
+            background-color: #f0f4f8;
+        }
+        @keyframes pulse-critical-glow {
+            0%, 100% { 
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7), 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            }
+            50% { 
+                box-shadow: 0 0 0 8px rgba(239, 68, 68, 0), 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            }
+        }
+        .patient-panel.critical {
+            animation: pulse-critical-glow 2s infinite;
+        }
+        .modal-overlay { position: fixed; inset: 0; background-color: rgb(17 24 39 / 0.75); display: none; align-items: center; justify-content: center; z-index: 50; }
+        .modal-content { background-color: rgb(249 250 251); padding: 2rem; border-radius: 1rem; position: relative; width: 91.666667%; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25); }
+        @media (min-width: 768px) { .modal-content { width: 75%; } }
+        @media (min-width: 1024px) { .modal-content { width: 50%; } }
+        .modal-header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; margin-bottom: 1rem; border-bottom-width: 2px; border-color: rgb(229 231 235); }
+        .modal-header h3 { font-size: 1.5rem; font-weight: 700; color: rgb(31 41 55); display: flex; align-items: center; gap: 0.75rem; }
+        .modal-header .fa-triangle-exclamation { color: rgb(239 68 68); }
+        .modal-close-btn { background-color: rgb(229 231 235); color: rgb(55 65 81); border-radius: 9999px; width: 2rem; height: 2rem; display: flex; align-items: center; justify-content: center; font-size: 1.125rem; font-weight: 700; transition: background-color 200ms; }
+        .modal-close-btn:hover { background-color: rgb(209 213 219); }
+        .modal-body { overflow-y: auto; padding: 0.25rem; }
+        .modal-state-message { text-align: center; padding: 2rem; color: rgb(107 114 128); }
+        .alert-item { background-color: white; padding: 1rem; border-radius: 0.75rem; border-left-width: 4px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); margin-bottom: 1rem; }
+        .alert-item.critical { border-color: rgb(239 68 68); }
+        .alert-item .header { display: flex; align-items: center; gap: 0.75rem; }
+        .alert-item .header .icon { font-size: 1.5rem; color: rgb(239 68 68); }
+        .alert-item .header strong { font-size: 1.125rem; font-weight: 700; color: rgb(17 24 39); }
+        .alert-item .description { padding-top: 0.75rem; margin-top: 0.75rem; border-top: 1px solid #f3f4f6; color: rgb(55 65 81); }
+        .alert-item .info-row { display: flex; align-items: center; gap: 0.75rem; font-size: 0.875rem; }
+        .alert-item .info-row i { width: 1rem; text-align: center; color: rgb(156 163 175); }
+        .alert-item .reason-text { font-weight: 600; color: rgb(31 41 55); }
+        .new-badge { display: inline-block; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; margin-left: 0.5rem; background-color: #fef08a; color: #a16207; border-radius: 9999px; animation: pulse-new 2s infinite ease-in-out; }
+        @keyframes pulse-new { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-screen-2xl mx-auto w-full">
+        <h2 class="text-3xl md:text-4xl font-extrabold text-gray-800 text-center mb-4">🧑‍⚕️ 스마트 병원 실시간 모니터링 대시보드</h2>
+        <p class="text-center text-gray-500 mb-8">3개 병동, 6명 환자의 상태를 실시간으로 확인합니다.</p>
+        <div class="flex justify-center mb-10">
+            <button id="openAlertsModal" class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2">
+                <i class="fas fa-bell"></i> 비정상 상태 로그 보기
+                <span id="newAlertsIndicator" class="hidden bg-yellow-400 text-gray-900 text-xs font-bold px-2 py-1 rounded-full">0</span>
+            </button>
+        </div>
+        <div id="dashboard-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"></div>
+        <div id="error-message" class="text-red-600 font-bold text-lg text-center mt-8"></div>
+        <div id="alertsModal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header"><h3><i class="fas fa-triangle-exclamation"></i> 비정상 상태 로그</h3><button id="closeAlertsModal" class="modal-close-btn">&times;</button></div>
+                <div class="modal-body" id="alerts-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const PATIENTS_API_ENDPOINT = "http://main-server-ALB-2094344529.us-east-1.elb.amazonaws.com/dashboard/patients";
+        const errorMessageElement = document.getElementById("error-message");
+        const wardPatients = { "A": [{ id: "P001", name: "정민우" }, { id: "P002", name: "이여하" }], "B": [{ id: "P003", name: "박선우" }, { id: "P004", name: "신동민" }], "C": [{ id: "P005", name: "강동현" }, { id: "P006", name: "한지원" }] };
+        const patientNameMap = Object.values(wardPatients).flat().reduce((map, patient) => { map[patient.id] = patient.name; return map; }, {});
+        
+        const patientCharts = {}, chartData = {};
+        const MAX_CHART_POINTS = 12;
+
+        let allPatientData = [];
+        let unseenAlertCount = 0;
+        let newlyConfirmedCriticalIDs = new Set();
+        
+        // [수정] 지연 알림을 위한 변수 추가
+        const ALERT_THRESHOLD = 2; // 2회 연속 비정상일 때 알림 (1.5초 * 2 = 3초)
+        let criticalConsecutiveCounts = {}; // 환자별 연속 비정상 횟수 기록
+        Object.values(wardPatients).flat().forEach(p => { criticalConsecutiveCounts[p.id] = 0; });
+
+        function initializeDashboard() {
+            const grid = document.getElementById('dashboard-grid');
+            grid.innerHTML = ''; 
+            for (const wardId in wardPatients) {
+                wardPatients[wardId].forEach(patient => {
+                    const patientId = patient.id;
+                    chartData[patientId] = { labels: [], data: [] };
+                    const panel = document.createElement('div');
+                    panel.id = panel-${patientId};
+                    panel.className = 'patient-panel bg-white rounded-2xl shadow-lg p-6 transition-all duration-300 flex flex-col';
+                    panel.innerHTML = 
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <p class="text-sm font-semibold text-indigo-600">WARD ${wardId}</p>
+                                <h3 class="text-2xl font-bold text-gray-800" id="name-${patientId}">${patient.name}</h3>
+                                <p class="text-xs text-gray-500">${patientId}</p>
+                            </div>
+                            <div id="status-${patientId}" class="px-4 py-1 text-sm font-bold rounded-full transition-colors duration-300">-</div>
+                        </div>
+                        <div class="flex-grow grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div id="vitals-${patientId}" class="space-y-3 text-sm"></div>
+                            <div class="min-h-[150px] flex flex-col">
+                                <p class="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2"><i class="fas fa-chart-line text-gray-400"></i>심박수 추이 (bpm)</p>
+                                <div class="relative flex-grow"><canvas id="chart-${patientId}"></canvas></div>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400 text-right mt-4 border-t pt-2 flex justify-end items-center gap-1.5"><i class="fas fa-clock"></i><span id="time-${patientId}">No data</span></div>;
+                    grid.appendChild(panel);
+                    const ctx = document.getElementById(chart-${patientId}).getContext('2d');
+                    patientCharts[patientId] = new Chart(ctx, { type: 'line', data: { labels: chartData[patientId].labels, datasets: [{ label: 'Heart Rate', data: chartData[patientId].data, borderColor: 'rgb(79, 70, 229)', backgroundColor: 'rgba(79, 70, 229, 0.1)', borderWidth: 2, pointBackgroundColor: 'rgb(79, 70, 229)', tension: 0.4, fill: true, }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: false, suggestedMin: 40, suggestedMax: 140 }, x: { display: false } } } });
+                });
+            }
+        }
+        
+        function formatTimestamp(utcTimestamp) { if (!utcTimestamp) return "알 수 없음"; const now = new Date(); const past = new Date(utcTimestamp); const diffMinutes = Math.round((now - past) / (1000 * 60)); if (diffMinutes < 1) return "방금 전"; if (diffMinutes < 60) return ${diffMinutes}분 전; return new Date(utcTimestamp).toLocaleTimeString('ko-KR'); }
+        
+        function calculateIsCritical(p) { if (!p) return true; let systolic = 0, diastolic = 0; if (p.blood_pressure && typeof p.blood_pressure === 'string' && p.blood_pressure.includes('/')) { [systolic, diastolic] = p.blood_pressure.split('/').map(Number); } return ((p.heart_rate !== null && (p.heart_rate > 120 || p.heart_rate < 40)) || (p.respiratory_rate !== null && (p.respiratory_rate < 10 || p.respiratory_rate > 30)) || (p.spo2 !== null && p.spo2 < 90) || (p.temperature !== null && (p.temperature >= 38.0 || p.temperature <= 35.0)) || (systolic >= 180 || diastolic >= 110) || (p.consciousness !== null && p.consciousness !== "Alert")); }
+        
+        // [수정] '지속적인' 비정상 상태를 감지하는 새로운 알림 로직
+        function checkNewAlerts() {
+            const latestDataMap = allPatientData.reduce((map, p) => { map[p.patient_id] = p; return map; }, {});
+
+            Object.keys(patientNameMap).forEach(id => {
+                const patientData = latestDataMap[id];
+                if (calculateIsCritical(patientData)) {
+                    criticalConsecutiveCounts[id] = (criticalConsecutiveCounts[id] || 0) + 1;
+                } else {
+                    criticalConsecutiveCounts[id] = 0;
+                }
+
+                if (criticalConsecutiveCounts[id] === ALERT_THRESHOLD) {
+                    unseenAlertCount++;
+                    newlyConfirmedCriticalIDs.add(id);
+                }
+            });
+            updateAlertBadge();
+        }
+
+        function updateAlertBadge() {
+            const newAlertsIndicator = document.getElementById('newAlertsIndicator');
+            if (unseenAlertCount > 0) {
+                newAlertsIndicator.textContent = unseenAlertCount;
+                newAlertsIndicator.classList.remove('hidden');
+            } else {
+                newAlertsIndicator.classList.add('hidden');
+            }
+        }
+
+        async function updateDashboard() {
+            try {
+                errorMessageElement.textContent = "";
+                const res = await fetch(PATIENTS_API_ENDPOINT);
+                if (!res.ok) throw new Error(HTTP error! status: ${res.status});
+                let rawPatientData = await res.json();
+                allPatientData = rawPatientData.map(p => ({ ...p, name: patientNameMap[p.patient_id] || '정보 없음' }));
+                const latestMap = {};
+                allPatientData.forEach(p => { latestMap[p.patient_id] = p; });
+
+                for (const patientId in patientCharts) {
+                    const p = latestMap[patientId];
+                    const panel = document.getElementById(panel-${patientId});
+                    const statusDiv = document.getElementById(status-${patientId});
+                    const vitalsDiv = document.getElementById(vitals-${patientId});
+                    const timeDiv = document.getElementById(time-${patientId});
+                    if (p) {
+                        const isCritical = calculateIsCritical(p);
+                        panel.classList.toggle('critical', isCritical);
+                        statusDiv.textContent = isCritical ? 'CRITICAL' : 'STABLE';
+                        statusDiv.className = px-4 py-1 text-sm font-bold rounded-full transition-colors duration-300 ${isCritical ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'};
+                        vitalsDiv.innerHTML = 
+                            <div class="flex justify-between items-center"><span class="text-gray-500 flex items-center gap-2"><i class="fas fa-heartbeat w-4 text-red-500"></i>심박수</span><strong class="text-lg text-gray-800">${p.heart_rate ?? '-'}</strong><span class="w-10 text-right text-gray-400">bpm</span></div>
+                            <div class="flex justify-between items-center"><span class="text-gray-500 flex items-center gap-2"><i class="fas fa-lungs w-4 text-cyan-500"></i>호흡수</span><strong class="text-lg text-gray-800">${p.respiratory_rate ?? '-'}</strong><span class="w-10 text-right text-gray-400">/min</span></div>
+                            <div class="flex justify-between items-center"><span class="text-gray-500 flex items-center gap-2"><i class="fas fa-tint w-4 text-blue-500"></i>산소포화도</span><strong class="text-lg text-gray-800">${p.spo2 ?? '-'}</strong><span class="w-10 text-right text-gray-400">%</span></div>
+                            <div class="flex justify-between items-center"><span class="text-gray-500 flex items-center gap-2"><i class="fas fa-thermometer-half w-4 text-orange-500"></i>체온</span><strong class="text-lg text-gray-800">${p.temperature ?? '-'}</strong><span class="w-10 text-right text-gray-400">°C</span></div>;
+                        timeDiv.textContent = formatTimestamp(p.timestamp);
+                        const chart = patientCharts[patientId];
+                        const data = chartData[patientId];
+                        if (p.heart_rate !== null) { data.labels.push(new Date().toLocaleTimeString('ko-KR')); data.data.push(p.heart_rate); if (data.labels.length > MAX_CHART_POINTS) { data.labels.shift(); data.data.shift(); } chart.update(); }
+                    } else { statusDiv.textContent = 'NO DATA'; statusDiv.className = 'px-4 py-1 text-sm font-bold rounded-full bg-gray-200 text-gray-600'; vitalsDiv.innerHTML = '<p class="text-gray-500">환자 데이터를 수신할 수 없습니다.</p>'; timeDiv.textContent = 'N/A'; }
+                }
+                checkNewAlerts();
+            } catch (e) {
+                console.error("❌ 환자 데이터 로딩 실패:", e);
+                errorMessageElement.textContent = ❌ 서버 연결 실패. 잠시 후 다시 시도합니다. (${e.message});
+            }
+        }
+
+        function loadAlerts() {
+          const alertsListContainer = document.getElementById("alerts-list");
+          alertsListContainer.innerHTML = '';
+          const seenPatientIds = new Set(); // ✅ 이미 추가한 환자 방지용
+          const criticalPatients = allPatientData
+              .filter(p => p && criticalConsecutiveCounts[p.patient_id] >= ALERT_THRESHOLD)
+              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        if (criticalPatients.length === 0) {
+            alertsListContainer.innerHTML = `
+                <div class="modal-state-message">
+                    <i class="fas fa-check-circle text-green-500 text-2xl"></i>
+                    <p>확인된 비정상 상태인 환자가 없습니다.</p>
+                </div>`;
+            return;
+        }
+          criticalPatients.forEach(alert => {
+            if (seenPatientIds.has(alert.patient_id)) return; // ✅ 중복 방지
+            seenPatientIds.add(alert.patient_id);
+
+            const alertItem = document.createElement("div");
+            alertItem.className = `alert-item critical`;
+    
+            const isNewlyConfirmed = newlyConfirmedCriticalIDs.has(alert.patient_id);
+            const newBadgeHTML = isNewlyConfirmed ? '<span class="new-badge">NEW</span>' : '';
+    
+            let reason = "상태 확인 필요";
+            if (alert.heart_rate > 120 || alert.heart_rate < 40) reason = `심박수 비정상 (${alert.heart_rate} bpm)`;
+            else if (alert.spo2 < 90) reason = `산소포화도 저하 (${alert.spo2}%)`;
+            else if (alert.respiratory_rate < 10 || alert.respiratory_rate > 30) reason = `호흡수 비정상 (${alert.respiratory_rate}회/분)`;
+            else if (alert.temperature >= 38.0 || alert.temperature <= 35.0) reason = `체온 비정상 (${alert.temperature}°C)`;
+            else if (alert.blood_pressure && (alert.blood_pressure.split('/')[0] >= 180 || alert.blood_pressure.split('/')[1] >= 110)) reason = `혈압 비정상 (${alert.blood_pressure}mmHg)`;
+            else if (alert.consciousness !== 'Alert') reason = `의식상태 비정상 (${alert.consciousness})`;
+
+            alertItem.innerHTML = `
+                <div class="header">
+                    <span class="icon"><i class="fas fa-user-injured"></i></span>
+                    <strong>${alert.name} (${alert.patient_id})</strong>
+                    ${newBadgeHTML}
+                </div>
+                <div class="description">
+                    <div class="info-row"><i class="fas fa-triangle-exclamation"></i><span class="reason-text">${reason}</span></div>
+                    <div class="info-row"><i class="far fa-clock"></i><span>${formatTimestamp(alert.timestamp)}</span></div>
+                </div>`;
+            alertsListContainer.appendChild(alertItem);
+          });
+        }
+        
+        const alertsModal = document.getElementById('alertsModal');
+        const openAlertsModalBtn = document.getElementById('openAlertsModal');
+        const closeAlertsModalBtn = document.getElementById('closeAlertsModal');
+        
+        openAlertsModalBtn.addEventListener('click', () => {
+            alertsModal.style.display = 'flex';
+            loadAlerts(); 
+            unseenAlertCount = 0;
+            newlyConfirmedCriticalIDs.clear();
+            updateAlertBadge();
+        });
+        
+        closeAlertsModalBtn.addEventListener('click', () => { alertsModal.style.display = 'none'; });
+        alertsModal.addEventListener('click', (event) => { if (event.target === alertsModal) { alertsModal.style.display = 'none'; }});
+        
+        initializeDashboard();
+        updateDashboard();
+        setInterval(updateDashboard, 1500);
+    </script>
+</body>
+</html>
