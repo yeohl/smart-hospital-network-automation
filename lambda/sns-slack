@@ -7,7 +7,9 @@ logger.setLevel(logging.INFO)
 
 http = urllib3.PoolManager()
 
-SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/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"
+SLACK_WEBHOOK_URL = (
+    "https://hooks.slack.com/services/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"
+)
 
 def notify_slack(text: str) -> None:
     try:
@@ -21,7 +23,6 @@ def notify_slack(text: str) -> None:
     except Exception as e:
         logger.error(f"[Slack] 전송 실패: {e}")
 
-
 def extract_instance_id_from_alarm(alarm_name: str) -> str:
     mapping = {
         "WARD-A_i-a1_HealthCheck": "i-0b63747b3d1f52972",
@@ -33,76 +34,75 @@ def extract_instance_id_from_alarm(alarm_name: str) -> str:
     }
     return mapping.get(alarm_name, "Unknown")
 
-
-INSTANCE_TO_WARD = {
-    "i-0b63747b3d1f52972": "A", "i-0fd919c3aa8dea3e9": "A",
-    "i-045763e17c20e1b8a": "B", "i-0a868727c52163cf1": "B",
-    "i-0cdf03f03f0353f3f": "C", "i-056a592094da69fe6": "C",
-}
+def get_ward_by_instance_id(inst_id: str) -> str:
+    mapping = {
+        "i-0b63747b3d1f52972": "A",
+        "i-0fd919c3aa8dea3e9": "A",
+        "i-045763e17c20e1b8a": "B",
+        "i-0a868727c52163cf1": "B",
+        "i-0cdf03f03f0353f3f": "C",
+        "i-056a592094da69fe6": "C",
+    }
+    return mapping.get(inst_id, "Unknown")
 
 def lambda_handler(event, context):
     logger.info("=== EVENT ===")
     logger.info(json.dumps(event))
 
-    # CloudWatch → SNS 기반 장애
+    # ✅ SNS 기반 CloudWatch 알람 처리
     if event.get("Records", [{}])[0].get("EventSource") == "aws:sns":
         try:
             msg = json.loads(event["Records"][0]["Sns"]["Message"])
             alarm = msg.get("AlarmName", "Unknown")
             inst_id = extract_instance_id_from_alarm(alarm)
-            ward = INSTANCE_TO_WARD.get(inst_id, "Unknown")
+            ward = get_ward_by_instance_id(inst_id)
 
             notify_slack(
                 f"🚨 *네트워크 장애 감지!*\n"
-                f"🏥 병동: `{ward}`\n"
-                f"장애 의료기기: `{alarm}`\n"
-                f"인스턴스 ID: `{inst_id}`"
+                f"> 🏥 *병동:* `{ward}`\n"
+                f"> 🖥️ *장애 의료기기:* `{alarm}`\n"
+                f"> 💻 *인스턴스:* `{inst_id}`"
             )
         except Exception as e:
             logger.error(f"SNS 파싱 실패: {e}")
             return {"statusCode": 500, "body": "SNS 처리 오류"}
 
-    # CloudTrail → StopInstances 기반
+    # ✅ CloudTrail → StopInstances 이벤트 처리
     elif event.get("source") == "aws.ec2":
         try:
             detail = event["detail"]
-            #evt_name = detail.get("eventName", "Unknown")
-            alarm = msg.get("AlarmName", "Unknown")
-            inst_id = extract_instance_id_from_alarm(alarm)
+            evt_name = detail.get("eventName", "Unknown")
+
             inst_id = (
                 detail.get("requestParameters", {})
                 .get("instancesSet", {})
                 .get("items", [{}])[0]
                 .get("instanceId", "Unknown")
             )
-            ward = INSTANCE_TO_WARD.get(inst_id, "Unknown")
+
+            ward = get_ward_by_instance_id(inst_id)
 
             notify_slack(
                 f"⚠️ *의료기기 장애 감지!*\n"
-                #f"이벤트: `{evt_name}`\n"
-                f"🏥 병동: `{ward}`\n"
-                f"장애 의료기기: `{alarm}`"
-                
+                f"> 🏥 *병동:* `{ward}`\n"
+                f"> 💻 *장애 의료기기:* `{inst_id}`"
             )
-
         except Exception as e:
             logger.error(f"CloudTrail 파싱 실패: {e}")
             return {"statusCode": 500, "body": "CloudTrail 처리 오류"}
 
-   
+    # ✅ 회선 전환 완료 알림
     elif event.get("type") == "ROUTE_RECOVERY":
         inst_id = event.get("instance_id", "Unknown")
         eni_id = event.get("eni_id", "Unknown")
         status = event.get("status", "Unknown")
-        #triggered_by = event.get("triggered_by", "lambda")
-        ward = INSTANCE_TO_WARD.get(inst_id, "Unknown")
         emoji = "✅" if status == "SUCCESS" else "❌"
+        ward = get_ward_by_instance_id(inst_id)
 
         notify_slack(
             f"{emoji} *조치 결과 ({status})*\n"
-            f"🏥 병동: `{ward}`\n"
-            f"🔁 `{inst_id}` → `{eni_id}`\n"
-            #f"📡 트리거: `{triggered_by}`"
+            f"> 🏥 *병동:* `{ward}`\n"
+            f"> 🔁 `{inst_id}` → `{eni_id}`"
         )
 
     else:
